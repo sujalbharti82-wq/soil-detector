@@ -1,6 +1,6 @@
 import os
-import numpy as np
 import streamlit as st
+import numpy as np
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -9,36 +9,86 @@ from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from tensorflow.keras.preprocessing import image
 
-DATASET = "clases"
-IMG_SIZE = 224
+st.set_page_config(page_title="Soil AI PRO MAX", layout="wide")
 
+DATASET = "clases"
+
+# ---------- SIDEBAR ----------
+st.sidebar.title("⚙️ Settings")
+use_cnn = st.sidebar.toggle("Use CNN", True)
+sim_weight = st.sidebar.slider("Similarity Weight", 0.0, 1.0, 0.6)
+cnn_weight = 1 - sim_weight
+
+# ---------- SOIL INFO ----------
 soil_info = {
-    "black": {"crop": "Cotton, Wheat", "fertilizer": "Urea + Potash"},
-    "clay": {"crop": "Rice, Broccoli", "fertilizer": "Compost + Gypsum"},
-    "red": {"crop": "Groundnut, Millets", "fertilizer": "NPK + Lime"},
-    "sandy": {"crop": "Watermelon, Potato", "fertilizer": "Vermicompost"}
+    "clay": {
+        "crops": ["Rice 🌾", "Broccoli 🥦", "Cabbage 🥬"],
+        "fertilizer": "Compost + Gypsum"
+    },
+    "sandy": {
+        "crops": ["Watermelon 🍉", "Potato 🥔", "Groundnut 🌰"],
+        "fertilizer": "Vermicompost + Organic Matter"
+    },
+    "black": {
+        "crops": ["Cotton 🌿", "Wheat 🌾", "Soybean 🌱"],
+        "fertilizer": "Urea + Potash"
+    },
+    "red": {
+        "crops": ["Millets 🌾", "Groundnut 🌰", "Pulses 🌱"],
+        "fertilizer": "NPK + Lime"
+    },
+    "mixed": {
+        "crops": ["Maize 🌽", "Wheat 🌾", "Vegetables 🥕"],
+        "fertilizer": "Balanced NPK + Compost"
+    }
 }
 
-st.set_page_config(page_title="Soil AI", layout="wide")
-
-# 🔥 MODEL LOAD (lightweight)
+# ---------- LOAD ----------
 @st.cache_resource
-def load_model():
-    return MobileNetV2(weights="imagenet", include_top=False, pooling="avg")
+def load_all():
+    cnn = tf.keras.models.load_model("soil_model.h5")
+    feat_model = MobileNetV2(weights="imagenet", include_top=False, pooling="avg")
+    features = np.load("features.npy")
+    labels = np.load("labels.npy")
+    return cnn, feat_model, features, labels
 
-model = load_model()
+cnn_model, feat_model, features, labels = load_all()
+classes = sorted(os.listdir(DATASET))
 
-# 🔥 FEATURE EXTRACT
-def extract_feature(img):
-    img = img.resize((IMG_SIZE, IMG_SIZE))
+# ---------- FEATURES ----------
+def deep_feature(img):
+    img = img.resize((224,224))
     arr = image.img_to_array(img)
     arr = np.expand_dims(arr, axis=0)
     arr = preprocess_input(arr)
-    feat = model.predict(arr, verbose=0)[0]
+    feat = feat_model.predict(arr, verbose=0)[0]
     return feat / np.linalg.norm(feat)
 
-# 🔥 MULTI CROP
-def extract_multi_features(img):
+# 🔥 NEW (MATCH 1285)
+def color_feature(img):
+    arr = np.array(img.resize((100,100)))
+    return np.array([
+        np.mean(arr[:,:,0]),
+        np.mean(arr[:,:,1]),
+        np.mean(arr[:,:,2])
+    ]) / 255.0
+
+def texture_feature(img):
+    arr = np.array(img.resize((100,100)).convert("L"))
+    return np.array([
+        np.std(arr),
+        np.mean(arr)
+    ]) / 255.0
+
+def full_feature(img):
+    return np.concatenate([
+        deep_feature(img),
+        color_feature(img),
+        texture_feature(img)
+    ])
+
+# ---------- MULTI CROP ----------
+def multi_crop(img):
     w, h = img.size
     crops = [
         (0,0,w//2,h//2),
@@ -47,80 +97,99 @@ def extract_multi_features(img):
         (w//2,h//2,w,h),
         (w//4,h//4,3*w//4,3*h//4)
     ]
-    return [extract_feature(img.crop(c)) for c in crops]
+    return [img.crop(c) for c in crops]
 
-# 🔥 DATASET LOAD (FAST VERSION)
-@st.cache_data
-def load_dataset():
-    features, labels = [], []
-    for cls in os.listdir(DATASET):
-        p = os.path.join(DATASET, cls)
-        if not os.path.isdir(p): continue
+# ---------- SIM ----------
+def sim_part(part):
+    feat = full_feature(part)   # 🔥 FIXED
 
-        files = os.listdir(p)[:8]  # 🔥 limit images (fast)
+    sims = cosine_similarity([feat], features)[0]
 
-        for f in files:
-            try:
-                img = Image.open(os.path.join(p,f)).convert("RGB")
-                feats = extract_multi_features(img)
-                for ft in feats:
-                    features.append(ft)
-                    labels.append(cls)
-            except:
-                pass
-    return np.array(features), np.array(labels)
+    scores = {}
+    for i, lbl in enumerate(labels):
+        scores[lbl] = scores.get(lbl,0) + sims[i]
 
-# 🔥 SAFE LOAD
-try:
-    features, labels = load_dataset()
-except:
-    features, labels = np.array([]), np.array([])
+    for k in scores:
+        scores[k] /= np.sum(labels == k)
 
-# ---------------- UI ----------------
+    return scores
 
-st.markdown("""
-<h1 style='text-align:center;color:#2E8B57;'>🌱 Soil Detection AI</h1>
-<p style='text-align:center;color:gray;'>Smart Soil Analysis</p>
-""", unsafe_allow_html=True)
+# ---------- CNN ----------
+def cnn_part(part):
+    part = part.resize((224,224))
+    arr = image.img_to_array(part)/255.0
+    arr = np.expand_dims(arr, axis=0)
 
-left, right = st.columns([1.1,1])
+    pred = cnn_model.predict(arr, verbose=0)[0]
 
-with left:
-    st.subheader("📤 Upload Image")
-    file = st.file_uploader("", type=["jpg","jpeg","png"])
+    return {cls: pred[i] for i, cls in enumerate(classes)}
 
-    if file:
-        img = Image.open(file).convert("RGB")
-        st.image(img, width=350)
+# ---------- FINAL ----------
+def final_predict(img):
+    total_scores = {}
 
-with right:
-    st.subheader("📊 Result")
+    for part in multi_crop(img):
 
-    if file:
-        if len(features) == 0:
-            st.error("Dataset missing ❌")
-        else:
-            query = extract_multi_features(img)
+        if np.std(np.array(part)) < 12:
+            continue
 
-            votes = []
-            for q in query:
-                sims = cosine_similarity([q], features)[0]
-                votes.append(labels[np.argmax(sims)])
+        sim_scores = sim_part(part)
+        cnn_scores = cnn_part(part) if use_cnn else {}
 
-            vals, cnt = np.unique(votes, return_counts=True)
-            final = vals[np.argmax(cnt)]
-            conf = (np.max(cnt)/len(votes))*100
-            info = soil_info[final]
+        for cls in classes:
+            s = sim_scores.get(cls,0)
+            c = cnn_scores.get(cls,0)
 
-            st.success(f"Soil: {final.upper()}")
-            st.write(f"Confidence: {conf:.1f}%")
+            score = (s*sim_weight + c*cnn_weight)
 
-            st.info(f"🌱 Crop: {info['crop']}")
-            st.info(f"🧪 Fertilizer: {info['fertilizer']}")
+            total_scores[cls] = total_scores.get(cls,0) + score
 
-            st.progress(int(conf))
+    sorted_scores = sorted(total_scores.items(), key=lambda x: x[1], reverse=True)
+    return sorted_scores
 
-    else:
-        st.write("Upload image")
+# ---------- UI ----------
+st.title("🌱 Soil AI PRO MAX")
 
-st.markdown("<hr><p style='text-align:center;'>Made by Suju</p>", unsafe_allow_html=True)
+col1, col2 = st.columns([1,1])
+
+file = st.file_uploader("📤 Upload Soil Image")
+
+if file:
+    img = Image.open(file).convert("RGB")
+
+    with col1:
+        st.image(img, caption="Uploaded Image", use_container_width=True)
+
+    results = final_predict(img)
+
+    top1 = results[0]
+    total = sum([r[1] for r in results])
+    conf = (top1[1]/total)*100
+
+    with col2:
+        st.subheader("🔍 Prediction")
+        st.success(f"🏆 {top1[0].upper()}")
+        st.progress(int(conf))
+        st.write(f"Confidence: {conf:.2f}%")
+
+        st.markdown("### 📊 Top 3 Results")
+        for cls, score in results[:3]:
+            percent = (score/total)*100
+            st.write(f"{cls} → {percent:.2f}%")
+
+    # ---------- RECOMMENDATION ----------
+    st.markdown("---")
+    st.subheader("🌾 Crop Recommendation")
+
+    soil_type = top1[0]
+    info = soil_info.get(soil_type, soil_info["mixed"])
+
+    st.success("Recommended Crops:")
+    for crop in info["crops"]:
+        st.write(f"✔ {crop}")
+
+    st.subheader("🧪 Fertilizer")
+    st.info(info["fertilizer"])
+
+    if conf < 50:
+        st.warning("⚠️ Low confidence → possible mixed soil")

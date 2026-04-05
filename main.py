@@ -10,12 +10,12 @@ datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
 
 train = datagen.flow_from_directory(DATASET,
     target_size=(IMG_SIZE,IMG_SIZE),
-    batch_size=4,
+    batch_size=8,
     subset="training")
 
 val = datagen.flow_from_directory(DATASET,
     target_size=(IMG_SIZE,IMG_SIZE),
-    batch_size=4,
+    batch_size=8,
     subset="validation")
 
 base = MobileNetV2(weights="imagenet",
@@ -24,12 +24,12 @@ base = MobileNetV2(weights="imagenet",
 
 base.trainable = False
 
-model = models.Sequential([
-    base,
-    layers.GlobalAveragePooling2D(),
-    layers.Dense(64, activation="relu"),
-    layers.Dense(train.num_classes, activation="softmax")
-])
+x = base.output
+x = layers.GlobalAveragePooling2D()(x)
+x = layers.Dense(64, activation="relu")(x)
+out = layers.Dense(train.num_classes, activation="softmax")(x)
+
+model = models.Model(inputs=base.input, outputs=out)
 
 model.compile(optimizer="adam",
     loss="categorical_crossentropy",
@@ -38,3 +38,5 @@ model.compile(optimizer="adam",
 model.fit(train, validation_data=val, epochs=10)
 
 model.save("soil_model.h5")
+
+print("✅ TRAIN DONE")
