@@ -15,7 +15,7 @@ DATASET = "clases"
 
 # ---------- SIDEBAR ----------
 st.sidebar.title("⚙️ Settings")
-use_cnn = st.sidebar.toggle("Use CNN", True)
+use_cnn = st.sidebar.checkbox("Use CNN", True)
 sim_weight = st.sidebar.slider("Similarity Weight", 0.0, 1.0, 0.6)
 cnn_weight = 1 - sim_weight
 
